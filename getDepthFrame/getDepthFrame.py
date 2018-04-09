@@ -1,4 +1,4 @@
-
+import sys
 from primesense import openni2
 from primesense import _openni2 as c_api
 import numpy as np
@@ -7,7 +7,7 @@ import rpyc
 
 rpyc.core.protocol.DEFAULT_CONFIG['allow_pickle'] = True
 
-DEPTH_PORT = 20100
+DEPTH_PORT = 20002
 
 KINECT_MIN_DISTANCE = 800
 KINECT_MAX_DISTANCE = 4000
@@ -27,23 +27,61 @@ RowDeg = KINECT_VERTICAL_RANGE_DEG / DEPTH_ROWS
 RowRad = np.radians(RowDeg)
 
 depth_stream = None
+navManager = None
 
-class depthCommands(rpyc.Service):
+def log(msg):
+    navManager.root.recordLog("kinect - " + msg)
+    print(msg)
+
+
+def kinectInit(logIP, logPort):
+
+    global navManager, depth_stream
+
+    try:
+        navManager = rpyc.connect(logIP, logPort)
+        navManager.root.connectionStatus("kinect", True)
+        log("logger connection established")
+
+    except:
+        print(f"kinect - could not establish connection to logger {sys.exc_info()[0]}")
+        raise SystemExit()
+
+    # try to capture the depth data
+    try:
+        openni2.initialize("C:/Program Files (x86)/OpenNI2/Redist/")
+        dev = openni2.Device.open_any()
+
+        depth_stream = dev.create_depth_stream()
+        depth_stream.start()
+        depth_stream.set_video_mode(c_api.OniVideoMode(pixelFormat=c_api.OniPixelFormat.ONI_PIXEL_FORMAT_DEPTH_100_UM, resolutionX=640, resolutionY=480, fps=30))
+        frame = depth_stream.read_frame()
+        log("depth data successfully captured")
+        navManager.root.processStatus("kinect", True)
+
+    except:
+        log(f"capturing depth data failed {sys.exc_info()[0]}, 12 V on??")
+        try:
+            openni2.unload()
+        except:
+            pass
+        raise SystemExit()
+
+
+def kinectDeactivate():
     '''
-    list of all remote calls to this thread
+    turn off kinect
     '''
+    openni2.unload()
+    log("kinect stopped")
+    return True
 
-    def exposed_echo(self, text):
-        return text + " from getDepthFrame"
 
-    def exposed_activateKinect(self):
-        return startKinect()
-
-    def exposed_deactivateKinect(self):
-        return stopKinect()
-
-    def exposed_getDepth(self, orientation):
-        return obstacleMap(orientation)
+def kinectTerminate():
+    '''
+    stop kinect Process
+    '''
+    raise SystemExit()
 
 
 def removeUpperRange(depth):
@@ -170,43 +208,26 @@ def obstacleMap(orientation):
     return screen
 
 
-
-def startKinect():
+class depthCommands(rpyc.Service):
     '''
-    start the kinect for taking depth images
+    list of all remote calls to this thread
     '''
-    global depth_stream
+    def exposed_startListening(self, navIP, navPort):
+        kinectInit(navIP, navPort)
+ 
+    def exposed_getDepth(self, orientation):
+        return obstacleMap(orientation)
 
-    try:
-        openni2.initialize("C:/Program Files (x86)/OpenNI2/Redist/")
+    def exposed_kinectDeactivate(self):
+        kinectDeactivate()
 
-        dev = openni2.Device.open_any()
-        depth_stream = dev.create_depth_stream()
-        depth_stream.start()
-        depth_stream.set_video_mode(c_api.OniVideoMode(pixelFormat=c_api.OniPixelFormat.ONI_PIXEL_FORMAT_DEPTH_100_UM, resolutionX=640, resolutionY=480, fps=30))
-        print("Kinect connected")
-        return True
-    except:
-        print("startKinect failed")
-        try:
-            openni2.unload()
-        except:
-            pass
-        return False
-
-
-def stopKinect():
-    '''
-    turn off kinect
-    '''
-    openni2.unload()
-    return True
+    def exposed_terminate(self):
+        kinectTerminate()
 
 
 if __name__ == '__main__':
 
-    #startKinect()
-    #obstacleMap(0)
+    print("kinect - wait for message from navManager")
 
     # start the listener for remote calls
     from rpyc.utils.server import ThreadedServer
